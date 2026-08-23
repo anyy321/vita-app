@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { supabase } from "./supabaseClient.js";
-import { createCheckoutLink, SUBSCRIPTION_PRICE_CENTS } from "./infinitePay.js";
+import { createCheckoutLink } from "./infinitePay.js";
+import { PRODUCTS, SUBSCRIPTION_PRODUCT, getProductById, formatPrice } from "./products.js";
 import App from "./App.jsx";
 
 const COLORS = {
@@ -12,13 +13,6 @@ const COLORS = {
   accent: "#8C5A52",
   gold: "#C9A24B",
 };
-
-function formatPrice(cents) {
-  return (cents / 100).toLocaleString("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  });
-}
 
 function Screen({ children }) {
   return (
@@ -37,11 +31,22 @@ function Screen({ children }) {
           style={{ color: COLORS.textSoft }}
           className="text-center text-xs mt-3 opacity-60"
         >
-          Vita · versão com login v3
+          Vita · autoconhecimento
         </p>
       </div>
     </div>
   );
+}
+
+function traduzErro(msg) {
+  if (!msg) return "Algo deu errado. Tente de novo.";
+  if (msg.includes("Invalid login credentials"))
+    return "E-mail ou senha incorretos.";
+  if (msg.includes("User already registered"))
+    return "Esse e-mail já tem uma conta. Tente entrar.";
+  if (msg.includes("Password should be"))
+    return "A senha precisa ter pelo menos 6 caracteres.";
+  return msg;
 }
 
 function LoginScreen() {
@@ -156,124 +161,6 @@ function LoginScreen() {
   );
 }
 
-function traduzErro(msg) {
-  if (!msg) return "Algo deu errado. Tente de novo.";
-  if (msg.includes("Invalid login credentials"))
-    return "E-mail ou senha incorretos.";
-  if (msg.includes("User already registered"))
-    return "Esse e-mail já tem uma conta. Tente entrar.";
-  if (msg.includes("Password should be"))
-    return "A senha precisa ter pelo menos 6 caracteres.";
-  return msg;
-}
-
-function SubscribeScreen({ session, profile, onRefreshProfile }) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [checking, setChecking] = useState(false);
-
-  const expired = profile?.subscription_expires_at
-    ? new Date(profile.subscription_expires_at) < new Date()
-    : false;
-
-  async function handleAssinar() {
-    setError("");
-    setLoading(true);
-    try {
-      const orderNsu = `${session.user.id}-${Date.now()}`;
-
-      // Salva o order_nsu no perfil, pra depois a "recebedora" do pagamento
-      // conseguir saber de quem é esse pedido.
-      const { error: updateError } = await supabase
-        .from("profiles")
-        .update({ order_nsu: orderNsu })
-        .eq("id", session.user.id);
-      if (updateError) throw updateError;
-
-      const checkoutUrl = await createCheckoutLink(
-        orderNsu,
-        session.user.email
-      );
-      window.location.href = checkoutUrl;
-    } catch (err) {
-      setError("Não foi possível gerar o link de pagamento. Tente de novo.");
-      setLoading(false);
-    }
-  }
-
-  async function handleVerificarPagamento() {
-    setChecking(true);
-    await onRefreshProfile();
-    setChecking(false);
-  }
-
-  return (
-    <Screen>
-      <h1
-        style={{ color: COLORS.text }}
-        className="text-xl font-semibold text-center mb-1"
-      >
-        {expired ? "Sua assinatura venceu" : "Assine o Vita"}
-      </h1>
-      <p
-        style={{ color: COLORS.textSoft }}
-        className="text-center text-sm mb-5"
-      >
-        {expired
-          ? "Renove para continuar tendo acesso completo."
-          : "Acesso completo por 30 dias, pague no Pix ou parcele no cartão."}
-      </p>
-
-      <div
-        style={{ borderColor: COLORS.border }}
-        className="rounded-xl border p-4 text-center mb-5"
-      >
-        <span
-          style={{ color: COLORS.gold }}
-          className="text-3xl font-semibold"
-        >
-          {formatPrice(SUBSCRIPTION_PRICE_CENTS)}
-        </span>
-        <p style={{ color: COLORS.textSoft }} className="text-xs mt-1">
-          por 30 dias de acesso
-        </p>
-      </div>
-
-      {error && (
-        <p className="text-sm text-center mb-3" style={{ color: "#B97080" }}>
-          {error}
-        </p>
-      )}
-
-      <button
-        onClick={handleAssinar}
-        disabled={loading}
-        style={{ background: COLORS.accent }}
-        className="w-full rounded-lg py-3 text-sm font-medium text-white disabled:opacity-60"
-      >
-        {loading ? "Gerando link..." : "Assinar agora"}
-      </button>
-
-      <button
-        onClick={handleVerificarPagamento}
-        disabled={checking}
-        style={{ color: COLORS.textSoft, borderColor: COLORS.border }}
-        className="w-full rounded-lg border py-3 text-sm mt-3 disabled:opacity-60"
-      >
-        {checking ? "Verificando..." : "Já paguei, verificar novamente"}
-      </button>
-
-      <button
-        onClick={() => supabase.auth.signOut()}
-        style={{ color: COLORS.textSoft }}
-        className="w-full text-center text-xs mt-5 underline"
-      >
-        Sair
-      </button>
-    </Screen>
-  );
-}
-
 function LoadingScreen() {
   return (
     <Screen>
@@ -286,18 +173,26 @@ function LoadingScreen() {
 
 export default function AuthGate() {
   const [session, setSession] = useState(undefined); // undefined = ainda não sabemos
-  const [profile, setProfile] = useState(null);
-  const [loadingProfile, setLoadingProfile] = useState(false);
+  const [profile, setProfile] = useState(null); // { is_subscriber, subscription_expires_at, order_nsu }
+  const [purchases, setPurchases] = useState([]); // linhas da tabela purchases (compras avulsas)
+  const [loadingEntitlements, setLoadingEntitlements] = useState(false);
 
-  const fetchProfile = useCallback(async (userId) => {
-    setLoadingProfile(true);
-    const { data } = await supabase
-      .from("profiles")
-      .select("is_subscriber, subscription_expires_at, order_nsu")
-      .eq("id", userId)
-      .maybeSingle();
-    setProfile(data || null);
-    setLoadingProfile(false);
+  const fetchEntitlements = useCallback(async (userId) => {
+    setLoadingEntitlements(true);
+    const [{ data: profileData }, { data: purchasesData }] = await Promise.all([
+      supabase
+        .from("profiles")
+        .select("is_subscriber, subscription_expires_at, order_nsu")
+        .eq("id", userId)
+        .maybeSingle(),
+      supabase
+        .from("purchases")
+        .select("product_id, order_nsu")
+        .eq("user_id", userId),
+    ]);
+    setProfile(profileData || null);
+    setPurchases(purchasesData || []);
+    setLoadingEntitlements(false);
   }, []);
 
   useEffect(() => {
@@ -316,11 +211,12 @@ export default function AuthGate() {
 
   useEffect(() => {
     if (session?.user?.id) {
-      fetchProfile(session.user.id);
+      fetchEntitlements(session.user.id);
     } else {
       setProfile(null);
+      setPurchases([]);
     }
-  }, [session, fetchProfile]);
+  }, [session, fetchEntitlements]);
 
   // Ainda não sabemos se tem sessão -> carregando
   if (session === undefined) return <LoadingScreen />;
@@ -328,23 +224,51 @@ export default function AuthGate() {
   // Não logado -> tela de login
   if (!session) return <LoginScreen />;
 
-  // Logado, mas ainda buscando o perfil -> carregando
-  if (loadingProfile && profile === null) return <LoadingScreen />;
-
   const hasActiveSubscription =
-    profile?.is_subscriber &&
-    profile?.subscription_expires_at &&
+    !!profile?.is_subscriber &&
+    !!profile?.subscription_expires_at &&
     new Date(profile.subscription_expires_at) > new Date();
 
-  if (!hasActiveSubscription) {
-    return (
-      <SubscribeScreen
-        session={session}
-        profile={profile}
-        onRefreshProfile={() => fetchProfile(session.user.id)}
-      />
+  const unlockedIds = purchases.map((p) => p.product_id);
+
+  // Cria o pedido no InfinitePay e leva para o checkout.
+  // `productId` precisa bater com um id do catálogo em src/products.js
+  async function goToCheckout(productId) {
+    const product = getProductById(productId);
+    if (!product) throw new Error("Produto não encontrado no catálogo.");
+
+    // order_nsu carrega o produto + usuário, pra o webhook saber o que liberar.
+    const orderNsu = `${product.id}__${session.user.id}__${Date.now()}`;
+
+    // Guarda o order_nsu mais recente no perfil (compat. com o fluxo antigo de assinatura)
+    if (product.type === "subscription") {
+      await supabase
+        .from("profiles")
+        .update({ order_nsu: orderNsu })
+        .eq("id", session.user.id);
+    }
+
+    const checkoutUrl = await createCheckoutLink(
+      product,
+      orderNsu,
+      session.user.email
     );
+    window.location.href = checkoutUrl;
   }
 
-  return <App />;
+  return (
+    <App
+      session={session}
+      initialSubscribed={hasActiveSubscription}
+      initialUnlockedIds={unlockedIds}
+      onBuyProduct={goToCheckout}
+      onSubscribe={
+        SUBSCRIPTION_PRODUCT
+          ? () => goToCheckout(SUBSCRIPTION_PRODUCT.id)
+          : undefined
+      }
+      onRefreshEntitlements={() => fetchEntitlements(session.user.id)}
+      onSignOut={() => supabase.auth.signOut()}
+    />
+  );
 }

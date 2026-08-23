@@ -1787,10 +1787,36 @@ function FootReflexMap({ zones, color }) {
   );
 }
 
-export default function App() {
-  const [purchased, setPurchased] = useState({ respiracao: true });
-  const [subscribed, setSubscribed] = useState(false);
+export default function App({
+  session,
+  initialSubscribed = false,
+  initialUnlockedIds = [],
+  onBuyProduct,
+  onSubscribe,
+  onRefreshEntitlements,
+  onSignOut,
+} = {}) {
+  // `purchased` agora reflete o que a pessoa REALMENTE comprou (vindo do
+  // Supabase, via AuthGate). O item "respiracao" continua liberado de graça
+  // como amostra do app.
+  const [purchased, setPurchased] = useState(() => {
+    const map = { respiracao: true };
+    initialUnlockedIds.forEach((id) => { map[id] = true; });
+    return map;
+  });
+  const [subscribed, setSubscribed] = useState(initialSubscribed);
+  const [buyingId, setBuyingId] = useState(null);
   const [completed, setCompleted] = useState({});
+
+  // Mantém o estado sincronizado se o AuthGate atualizar (ex: depois de um pagamento confirmado)
+  useEffect(() => {
+    setSubscribed(initialSubscribed);
+    setPurchased((prev) => {
+      const map = { ...prev, respiracao: true };
+      initialUnlockedIds.forEach((id) => { map[id] = true; });
+      return map;
+    });
+  }, [initialSubscribed, initialUnlockedIds]);
   const [view, setView] = useState("home");
   const [selectedId, setSelectedId] = useState(null);
   const [showSubscribe, setShowSubscribe] = useState(false);
@@ -2184,17 +2210,48 @@ export default function App() {
     });
   };
 
-  const buyProtocol = (id, title) => {
-    setPurchased((prev) => ({ ...prev, [id]: true }));
-    setToast(`"${title}" desbloqueado!`);
-    setTimeout(() => setToast(null), 2200);
+  // Compra avulsa de um produto (protocolo/e-book/cronograma).
+  // Não libera na hora — leva para o pagamento de verdade.
+  const buyProtocol = async (id, title) => {
+    if (!onBuyProduct) {
+      setToast("Pagamento indisponível no momento.");
+      setTimeout(() => setToast(null), 2200);
+      return;
+    }
+    setBuyingId(id);
+    try {
+      await onBuyProduct(id); // redireciona para o checkout da InfinitePay
+    } catch (e) {
+      setToast("Não foi possível abrir o pagamento. Tente de novo.");
+      setTimeout(() => setToast(null), 2200);
+      setBuyingId(null);
+    }
   };
 
-  const subscribeAll = () => {
-    setSubscribed(true);
-    setShowSubscribe(false);
-    setToast("Assinatura VIP ativada!");
-    setTimeout(() => setToast(null), 2200);
+  // Assinatura completa — leva para o pagamento de verdade.
+  const subscribeAll = async () => {
+    if (!onSubscribe) {
+      setToast("Pagamento indisponível no momento.");
+      setTimeout(() => setToast(null), 2200);
+      return;
+    }
+    setBuyingId("assinatura-completa");
+    try {
+      await onSubscribe();
+    } catch (e) {
+      setToast("Não foi possível abrir o pagamento. Tente de novo.");
+      setTimeout(() => setToast(null), 2200);
+      setBuyingId(null);
+    }
+  };
+
+  // Depois de voltar do checkout, permite conferir se o pagamento já confirmou.
+  const checkPaymentNow = async () => {
+    if (!onRefreshEntitlements) return;
+    setToast("Verificando pagamento...");
+    await onRefreshEntitlements();
+    setToast("Verificado! Se o pagamento já processou, o acesso libera aqui.");
+    setTimeout(() => setToast(null), 2600);
   };
 
   const openProtocol = (id) => { setSelectedId(id); setView("detail"); };
@@ -2347,6 +2404,9 @@ export default function App() {
                     const progress = getCompletedCount(p.id) / p.days;
                     return (
                       <button key={p.id} onClick={() => openProtocol(p.id)} className="text-left rounded-2xl p-3 relative vita-card vita-fade" style={{ background: "#FFFFFF", border: "1px solid #E4D9C4" }}>
+                        {p.free && (
+                          <span className="absolute top-2 right-2 text-[9px] font-semibold px-1.5 py-0.5 rounded-full" style={{ background: "#4F8C8220", color: "#4F8C82" }}>GRÁTIS</span>
+                        )}
                         <div className="flex items-center justify-between">
                           <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: p.color + "20" }}>
                             <Icon size={16} color={p.color} />
@@ -2379,7 +2439,12 @@ export default function App() {
                       <Icon size={18} color={p.color} />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p style={{ color: "#3E2E28" }} className="text-sm font-semibold truncate">{p.title}</p>
+                      <div className="flex items-center gap-1.5">
+                        <p style={{ color: "#3E2E28" }} className="text-sm font-semibold truncate">{p.title}</p>
+                        {p.free && (
+                          <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full shrink-0" style={{ background: "#4F8C8220", color: "#4F8C82" }}>GRÁTIS</span>
+                        )}
+                      </div>
                       <p className="text-xs truncate" style={{ color: "#8C7A6B" }}>{p.subtitle}</p>
                     </div>
                     {!unlocked ? <div className="text-xs font-medium shrink-0" style={{ color: "#8C7A6B" }}>{p.price}</div> : <ProgressRing progress={progress} color={p.color} size={30} stroke={3} />}
@@ -2554,7 +2619,10 @@ export default function App() {
         {/* ===== PROGRESS ===== */}
         {view === "progress" && (
           <div className="flex-1 overflow-y-auto pt-10 pb-24 px-5">
-            <h1 style={{ fontFamily: "'Playfair Display', serif", color: "#3E2E28" }} className="text-2xl font-semibold mb-4">Meu progresso</h1>
+            <h1 style={{ fontFamily: "'Playfair Display', serif", color: "#3E2E28" }} className="text-2xl font-semibold mb-1">Meu progresso</h1>
+            {session?.user?.email && (
+              <p className="text-xs mb-4" style={{ color: "#8C7A6B" }}>{session.user.email}</p>
+            )}
             <div className="grid grid-cols-2 gap-3 mb-6">
               <div className="rounded-2xl p-4" style={{ background: "#FFFFFF", border: "1px solid #E4D9C4" }}>
                 <p className="text-2xl font-semibold" style={{ color: "#3E2E28", fontFamily: "'Playfair Display', serif" }}>{totalCompletedDays}</p>
@@ -2582,6 +2650,11 @@ export default function App() {
               })}
               {totalOwned === 0 && <p className="text-sm text-center mt-10" style={{ color: "#8C7A6B" }}>Você ainda não iniciou nenhum protocolo.</p>}
             </div>
+            {!!onSignOut && (
+              <button onClick={onSignOut} className="w-full text-center text-xs mt-8 underline" style={{ color: "#8C7A6B" }}>
+                Sair da conta
+              </button>
+            )}
           </div>
         )}
 
@@ -2638,9 +2711,14 @@ export default function App() {
                 </div>
               )}
               {!isUnlocked(selected.id) && (
-                <button onClick={() => buyProtocol(selected.id, selected.title)} className="mt-4 w-full rounded-full py-3 text-white font-medium text-sm" style={{ background: selected.color }}>
-                  Desbloquear protocolo — {selected.price}
+                <button disabled={buyingId === selected.id} onClick={() => buyProtocol(selected.id, selected.title)} className="mt-4 w-full rounded-full py-3 text-white font-medium text-sm disabled:opacity-60" style={{ background: selected.color }}>
+                  {buyingId === selected.id ? "Abrindo pagamento..." : `Desbloquear protocolo — ${selected.price}`}
                 </button>
+                {!!onRefreshEntitlements && (
+                  <button onClick={checkPaymentNow} className="mt-2 w-full rounded-full py-2.5 text-sm font-medium" style={{ color: "#8C7A6B", border: "1px solid #E4D9C4" }}>
+                    Já paguei, verificar novamente
+                  </button>
+                )}
               )}
               {selected.id === "alma" && isUnlocked("alma") && (
                 <div className="mt-4 grid grid-cols-2 gap-3">
@@ -3212,9 +3290,14 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              <button onClick={subscribeAll} className="mt-5 w-full rounded-full py-3 text-white font-medium text-sm" style={{ background: "#3E2E28" }}>
-                Assinar por R$ 27,90/mês
+              <button disabled={buyingId === "assinatura-completa"} onClick={subscribeAll} className="mt-5 w-full rounded-full py-3 text-white font-medium text-sm disabled:opacity-60" style={{ background: "#3E2E28" }}>
+                {buyingId === "assinatura-completa" ? "Abrindo pagamento..." : "Assinar por R$ 39,90/30 dias"}
               </button>
+              {!!onRefreshEntitlements && (
+                <button onClick={checkPaymentNow} className="mt-2 w-full rounded-full py-2.5 text-sm font-medium" style={{ color: "#8C7A6B" }}>
+                  Já paguei, verificar novamente
+                </button>
+              )}
             </div>
           </div>
         )}
