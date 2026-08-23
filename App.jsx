@@ -2711,14 +2711,16 @@ export default function App({
                 </div>
               )}
               {!isUnlocked(selected.id) && (
-                <button disabled={buyingId === selected.id} onClick={() => buyProtocol(selected.id, selected.title)} className="mt-4 w-full rounded-full py-3 text-white font-medium text-sm disabled:opacity-60" style={{ background: selected.color }}>
-                  {buyingId === selected.id ? "Abrindo pagamento..." : `Desbloquear protocolo — ${selected.price}`}
-                </button>
-                {!!onRefreshEntitlements && (
-                  <button onClick={checkPaymentNow} className="mt-2 w-full rounded-full py-2.5 text-sm font-medium" style={{ color: "#8C7A6B", border: "1px solid #E4D9C4" }}>
-                    Já paguei, verificar novamente
+                <>
+                  <button disabled={buyingId === selected.id} onClick={() => buyProtocol(selected.id, selected.title)} className="mt-4 w-full rounded-full py-3 text-white font-medium text-sm disabled:opacity-60" style={{ background: selected.color }}>
+                    {buyingId === selected.id ? "Abrindo pagamento..." : `Desbloquear protocolo — ${selected.price}`}
                   </button>
-                )}
+                  {!!onRefreshEntitlements && (
+                    <button onClick={checkPaymentNow} className="mt-2 w-full rounded-full py-2.5 text-sm font-medium" style={{ color: "#8C7A6B", border: "1px solid #E4D9C4" }}>
+                      Já paguei, verificar novamente
+                    </button>
+                  )}
+                </>
               )}
               {selected.id === "alma" && isUnlocked("alma") && (
                 <div className="mt-4 grid grid-cols-2 gap-3">
